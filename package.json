@@ -8,10 +8,11 @@
     "tui"
   ],
   "exports": {
-    ".": "./src/tui.tsx",
-    "./tui": "./src/tui.tsx"
+    ".": "./tui.ts",
+    "./tui": "./tui.ts"
   },
   "files": [
+    "tui.ts",
     "src/",
     "README.md",
     "LICENSE"

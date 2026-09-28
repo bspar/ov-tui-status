@@ -6,10 +6,12 @@ visible without adding synthetic transcript messages or repeating retrieval.
 
 ## What it shows
 
-- A single composer status line, for example:
+- A compact sidebar-footer status, for example:
 
   ```text
-  ▸ OpenViking: recalled 4 · +2 created · ~1 updated  (/ov-memories)
+  OpenViking
+  Recall 4 · +2 · ~1
+  /ov-memories
   ```
 
 - A scrollable session panel with two tabs:
@@ -31,7 +33,10 @@ characters.
   cache and a 3-second request timeout.
 - API credentials are read from `~/.openviking/ovcli.conf` and are never shown.
 - The OpenCode-to-OpenViking session mapping is read from the active memory
-  plugin's `openviking-session-state.json`.
+  plugin's `openviking-session-state.json`. If a completed session has already
+  been pruned from that local state, the companion probes the plugin's normal
+  `oc-<OpenCode session ID>` mapping and accepts it only when OpenViking confirms
+  that session exists.
 - Created memories are attributed to an archive/commit batch, not falsely to a
   single prompt.
 
@@ -45,23 +50,33 @@ characters.
 
 ## Install from a checkout
 
-Clone the repository, then add its directory to the global OpenCode CLI config
-at `~/.config/opencode/cli.json`:
+Clone the repository into OpenCode's global CLI plugin discovery directory:
 
-```jsonc
-{
-  "plugins": [
-    "/absolute/path/to/ov-tui-status"
-  ]
-}
+```bash
+git clone https://github.com/bspar/ov-tui-status.git \
+  ~/.config/opencode/plugins/ov-tui-status
 ```
 
-This is a **CLI plugin**, so it belongs in `cli.json`, not `opencode.json`.
-Keep the existing OpenViking server plugin in `opencode.json`; the two plugins
-have separate responsibilities.
+Do not run `npm install` in that activated copy; OpenCode supplies the TUI
+runtime dependencies. Keep a separate development checkout when changing or
+testing the project.
 
-The package exports `./tui` and declares `oc-plugin: ["tui"]` for OpenCode's
-plugin discovery.
+This is a **CLI plugin**, not a server plugin. Keep the existing OpenViking
+server plugin in `opencode.json`; the two plugins have separate responsibilities.
+
+The package exposes the conventional root `tui.ts` entrypoint, exports
+`./tui`, and declares `oc-plugin: ["tui"]` for OpenCode's plugin discovery.
+
+For local development, validate in the development checkout and copy only the
+packaged runtime files into the discovery directory:
+
+```bash
+mkdir -p ~/.config/opencode/plugins/ov-tui-status/src
+cp package.json tui.ts README.md LICENSE \
+  ~/.config/opencode/plugins/ov-tui-status/
+cp src/*.mjs src/*.tsx \
+  ~/.config/opencode/plugins/ov-tui-status/src/
+```
 
 ## Usage
 
@@ -118,7 +133,7 @@ real transcript or modify OpenViking.
 ## Current limitation
 
 OpenCode does not currently expose a documented custom transcript message-part
-renderer. This plugin therefore uses a one-line composer status plus the
+renderer. This plugin therefore uses a compact sidebar status plus the
 official `session.panel` API rather than injecting fake tool calls into the
 conversation.
 

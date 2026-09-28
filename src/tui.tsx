@@ -1,12 +1,26 @@
 import { Plugin } from "@opencode/plugin/tui"
 import type { Context, PanelInput } from "@opencode/plugin/tui/context"
 import type { SessionMessageInfo } from "@opencode/client"
-import { For, Show, createMemo, createSignal, onMount } from "solid-js"
+import { appendFileSync } from "node:fs"
+import { For, Show, createMemo, createSignal } from "solid-js"
 import { recallTurns, truncate } from "./memory-model.mjs"
 import { OpenVikingStatusClient } from "./openviking-client.mjs"
 
 const PANEL_NAME = "openviking.memories"
 const PAGE_SIZE = 12
+const DEBUG = process.env.OV_TUI_STATUS_DEBUG === "1"
+
+function debug(message: string, data?: unknown) {
+  if (!DEBUG) return
+  try {
+    appendFileSync(
+      "/tmp/ov-tui-status-debug.log",
+      `${new Date().toISOString()} ${message} ${JSON.stringify(data ?? {})}\n`,
+    )
+  } catch {
+    // Debug output must never affect the TUI.
+  }
+}
 
 type RecallEntry = ReturnType<typeof recallTurns>[number]["entries"][number] & {
   group: string
@@ -53,28 +67,45 @@ function counts(changes: ChangeEntry[]) {
   )
 }
 
-function ComposerStatus(props: { context: Context; sessionID: string; client: OpenVikingStatusClient }) {
+function SidebarStatus(props: { context: Context; sessionID: string; client: OpenVikingStatusClient }) {
   const [changes, setChanges] = createSignal<ChangeEntry[]>([])
-  const messages = () => props.context.data.session.message.list(props.sessionID)
+  const [syncedMessages, setSyncedMessages] = createSignal<SessionMessageInfo[]>([])
+  const messages = () => {
+    const live = props.context.data.session.message.list(props.sessionID)
+    return syncedMessages().length ? syncedMessages() : live
+  }
   const recallCount = createMemo(() => latestRecallCount(messages()))
   const changeCounts = createMemo(() => counts(changes()))
 
-  onMount(() => {
-    void props.client.sessionChanges(props.sessionID)
-      .then((result) => setChanges(result.changes as ChangeEntry[]))
-      .catch(() => undefined)
-  })
+  void props.context.client.session.context({ sessionID: props.sessionID })
+    .then((sessionMessages) => {
+      debug("session context loaded", { sessionID: props.sessionID, messages: sessionMessages.length })
+      setSyncedMessages(sessionMessages)
+    })
+    .catch((error) => debug("session context failed", { sessionID: props.sessionID, error: String(error) }))
+  void props.client.sessionChanges(props.sessionID)
+    .then((result) => {
+      debug("memory changes loaded", { sessionID: props.sessionID, changes: result.changes.length })
+      setChanges(result.changes as ChangeEntry[])
+    })
+    .catch((error) => debug("memory changes failed", { sessionID: props.sessionID, error: String(error) }))
 
   const summary = createMemo(() => {
-    const parts = [`OpenViking: recalled ${recallCount()}`]
+    const parts = [`Recall ${recallCount()}`]
     const current = changeCounts()
-    if (current.add) parts.push(`+${current.add} created`)
-    if (current.update) parts.push(`~${current.update} updated`)
-    if (current.delete) parts.push(`-${current.delete} deleted`)
-    return `▸ ${parts.join(" · ")}  (/ov-memories)`
+    if (current.add) parts.push(`+${current.add}`)
+    if (current.update) parts.push(`~${current.update}`)
+    if (current.delete) parts.push(`-${current.delete}`)
+    return parts.join(" · ")
   })
 
-  return <text fg={props.context.theme.text.muted}>{summary()}</text>
+  return (
+    <box flexDirection="column" paddingTop={1}>
+      <text fg={props.context.theme.text.base}><b>OpenViking</b></text>
+      <text fg={props.context.theme.text.muted}>{summary()}</text>
+      <text fg={props.context.theme.text.muted}>/ov-memories</text>
+    </box>
+  )
 }
 
 function MemoryPanel(props: { context: Context; panel: PanelInput; client: OpenVikingStatusClient }) {
@@ -84,8 +115,12 @@ function MemoryPanel(props: { context: Context; panel: PanelInput; client: OpenV
   const [selected, setSelected] = createSignal(0)
   const [offset, setOffset] = createSignal(0)
   const [expanded, setExpanded] = createSignal(false)
+  const [syncedMessages, setSyncedMessages] = createSignal<SessionMessageInfo[]>([])
 
-  const messages = () => props.context.data.session.message.list(props.panel.sessionID)
+  const messages = () => {
+    const live = props.context.data.session.message.list(props.panel.sessionID)
+    return syncedMessages().length ? syncedMessages() : live
+  }
   const recallEntries = createMemo(() => recalled(messages()))
   const entries = createMemo<DisplayEntry[]>(() => {
     if (tab() === "recall") {
@@ -99,7 +134,8 @@ function MemoryPanel(props: { context: Context; panel: PanelInput; client: OpenV
   async function refresh(force = false) {
     setStatus("loading")
     try {
-      await props.context.data.session.message.sync(props.panel.sessionID)
+      const sessionMessages = await props.context.client.session.context({ sessionID: props.panel.sessionID })
+      setSyncedMessages(sessionMessages)
       const result = await props.client.sessionChanges(props.panel.sessionID, { force })
       setChanges(result.changes as ChangeEntry[])
       setStatus(result.status)
@@ -141,7 +177,7 @@ function MemoryPanel(props: { context: Context; panel: PanelInput; client: OpenV
     ],
   }))
 
-  onMount(() => void refresh())
+  void refresh()
 
   const countLabel = createMemo(() => {
     if (tab() === "recall") return `${entries().length} recalled entries from the latest 20 turns`
@@ -188,12 +224,9 @@ function MemoryPanel(props: { context: Context; panel: PanelInput; client: OpenV
   )
 }
 
-export default Plugin.define({
-  id: "openviking.tui-status",
-  setup(context) {
-    const client = new OpenVikingStatusClient(context.options || {})
-
-    context.keymap.layer(() => ({
+function GlobalCommands(props: { context: Context }) {
+  props.context.keymap.layer(() => {
+    return {
       mode: "global",
       priority: 10,
       commands: [
@@ -206,17 +239,29 @@ export default Plugin.define({
           slash: { name: "ov-memories", aliases: ["memories"] },
           suggested: true,
           run: () => {
-            if (!context.ui.panel.open(PANEL_NAME)) {
-              context.ui.toast.show({ message: "Open an OpenCode session first", variant: "warning" })
+            if (!props.context.ui.panel.open(PANEL_NAME)) {
+              props.context.ui.toast.show({ message: "Open an OpenCode session first", variant: "warning" })
             }
           },
         },
       ],
-    }))
+    }
+  })
+  return null
+}
 
-    const unregisterComposer = context.ui.slot({
-      append: "session.composer.top",
-      render: ({ sessionID }) => <ComposerStatus context={context} sessionID={sessionID} client={client} />,
+export default Plugin.define({
+  id: "openviking.tui-status",
+  setup(context) {
+    const client = new OpenVikingStatusClient(context.options || {})
+
+    const unregisterCommands = context.ui.slot({
+      append: "app",
+      render: () => <GlobalCommands context={context} />,
+    })
+    const unregisterSidebar = context.ui.slot({
+      append: "sidebar.footer",
+      render: ({ sessionID }) => <SidebarStatus context={context} sessionID={sessionID} client={client} />,
     })
     const unregisterPanel = context.ui.slot({
       append: "session.panel",
@@ -228,7 +273,8 @@ export default Plugin.define({
     })
 
     return () => {
-      unregisterComposer()
+      unregisterCommands()
+      unregisterSidebar()
       unregisterPanel()
     }
   },

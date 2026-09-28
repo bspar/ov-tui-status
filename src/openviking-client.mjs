@@ -48,10 +48,15 @@ export class OpenVikingStatusClient {
   async #loadSessionChanges(sessionID) {
     const [rawConfig, state] = await Promise.all([readJSON(this.configPath), readJSON(this.statePath)])
     const config = normalizeConfig(rawConfig)
-    const ovSessionID = state?.sessions?.[sessionID]?.ovSessionId
-    if (!ovSessionID) return { status: "unmapped", ovSessionID: "", changes: [], archives: 0 }
+    const ovSessionID = state?.sessions?.[sessionID]?.ovSessionId || `oc-${sessionID}`
 
-    const session = await this.#request(config, `/api/v1/sessions/${encodeURIComponent(ovSessionID)}`)
+    let session
+    try {
+      session = await this.#request(config, `/api/v1/sessions/${encodeURIComponent(ovSessionID)}`)
+    } catch (error) {
+      if (error?.status === 404) return { status: "unmapped", ovSessionID, changes: [], archives: 0 }
+      throw error
+    }
     const sessionUri = String(session?.uri || "")
     if (!sessionUri) return { status: "unavailable", ovSessionID, changes: [], archives: 0 }
 

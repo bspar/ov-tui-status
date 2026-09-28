@@ -44,15 +44,25 @@ test("loads bounded archive diffs for a mapped OpenCode session", async () => {
   assert.equal(requests.length, 4, "second call uses the bounded cache")
 })
 
-test("reports unmapped sessions without contacting OpenViking", async () => {
+test("falls back to the conventional OpenViking session id and reports a missing session", async () => {
   const root = await mkdtemp(join(tmpdir(), "ov-tui-status-"))
   const configPath = join(root, "ovcli.conf")
   const statePath = join(root, "state.json")
   await writeFile(configPath, JSON.stringify({ url: "http://ov.test" }))
   await writeFile(statePath, JSON.stringify({ sessions: {} }))
-  let called = false
-  const client = new OpenVikingStatusClient({ configPath, statePath, fetchImpl: async () => { called = true } })
+  let requested = ""
+  const client = new OpenVikingStatusClient({
+    configPath,
+    statePath,
+    fetchImpl: async (url) => {
+      requested = String(url)
+      return new Response(JSON.stringify({ status: "error", error: { message: "not found" } }), {
+        status: 404,
+        headers: { "content-type": "application/json" },
+      })
+    },
+  })
   const result = await client.sessionChanges("missing")
   assert.equal(result.status, "unmapped")
-  assert.equal(called, false)
+  assert.match(requested, /\/sessions\/oc-missing$/)
 })
